@@ -3,8 +3,11 @@ package clientconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 const gw = "http://localhost:3000"
@@ -57,7 +60,7 @@ var fixtures = []fixture{
 func setup(t *testing.T, f fixture, withFile bool) string {
 	t.Helper()
 	h := t.TempDir()
-	t.Setenv("HOME", h)
+	testhome.Set(t, h)
 	t.Setenv("HERMES_HOME", "")
 	p := filepath.Join(h, f.rel)
 	if withFile {
@@ -120,7 +123,7 @@ func TestExistingPreservedIdempotentRoundTrip(t *testing.T) {
 				}
 			}
 			st, _ := os.Stat(p)
-			if st.Mode().Perm() != 0o640 {
+			if runtime.GOOS != "windows" && st.Mode().Perm() != 0o640 {
 				t.Errorf("mode = %v, want 0640", st.Mode().Perm())
 			}
 			res, err := Configure(f.client, Options{GatewayURL: gw})

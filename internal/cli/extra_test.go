@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/jeefy/convergence/internal/config"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func TestResolveConfig_allFlags(t *testing.T) {
@@ -105,7 +107,7 @@ func writeFakeKubectl(t *testing.T, exit string) string {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	t.Setenv("HOME", t.TempDir())
+	testhome.New(t)
 	return log
 }
 

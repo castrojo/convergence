@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func TestNamesAndEnvExports(t *testing.T) {
@@ -22,7 +24,7 @@ func TestNamesAndEnvExports(t *testing.T) {
 }
 
 func TestUnknownClient(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.New(t)
 	if _, err := Configure("nope", Options{GatewayURL: gw}); err == nil || !strings.Contains(err.Error(), "unknown client") {
 		t.Errorf("configure: %v", err)
 	}
@@ -33,7 +35,7 @@ func TestUnknownClient(t *testing.T) {
 
 func TestRestoreNothingAndCorruptManifest(t *testing.T) {
 	h := t.TempDir()
-	t.Setenv("HOME", h)
+	testhome.Set(t, h)
 	if _, err := Restore("claude-code", Options{}); err == nil || !strings.Contains(err.Error(), "nothing to restore") {
 		t.Errorf("got %v", err)
 	}
@@ -57,7 +59,7 @@ func TestEmptyFileAndTrailingCommasAllJSONClients(t *testing.T) {
 		for name, content := range map[string]string{"empty": "", "ws": "  \n", "emptyobj": "{}", "tc": "{\"a\": [1,2,],\n}\n"} {
 			t.Run(f.client+"/"+name, func(t *testing.T) {
 				h := t.TempDir()
-				t.Setenv("HOME", h)
+				testhome.Set(t, h)
 				p := filepath.Join(h, f.rel)
 				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 					t.Fatal(err)
@@ -245,7 +247,7 @@ func TestWriteAtomicErrors(t *testing.T) {
 	if err := writeAtomic(m, []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := os.Stat(m); st.Mode().Perm() != 0o640 {
+	if st, _ := os.Stat(m); runtime.GOOS != "windows" && st.Mode().Perm() != 0o640 {
 		t.Errorf("mode %v", st.Mode())
 	}
 	if ents, _ := os.ReadDir(d); len(ents) != 3 {
@@ -469,7 +471,7 @@ var pathA = []string{"a", "b"}
 
 func TestHermesHomeOverride(t *testing.T) {
 	d := t.TempDir()
-	t.Setenv("HOME", t.TempDir())
+	testhome.New(t)
 	t.Setenv("HERMES_HOME", d)
 	r, err := Configure("hermes", Options{GatewayURL: gw})
 	if err != nil {

@@ -7,12 +7,13 @@ import (
 
 	"github.com/jeefy/convergence/internal/config"
 	"github.com/jeefy/convergence/internal/skillscan"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func TestCheckSkills(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testhome.Set(t, home)
 	e := newEnv(t)
 	if r := CheckSkills(e); r.Status != Info {
 		t.Fatalf("off by default: %+v", r)

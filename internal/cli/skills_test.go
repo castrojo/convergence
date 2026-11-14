@@ -11,14 +11,15 @@ import (
 
 	"github.com/jeefy/convergence/internal/config"
 	"github.com/jeefy/convergence/internal/skillscan"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 // skillHome is a temp HOME with one installed skill and an optional cached scan.
 func skillHome(t *testing.T, cached *skillscan.Report) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testhome.Set(t, home)
 	t.Setenv("PATH", t.TempDir()) // no engine: a rescan must not run
 	d := filepath.Join(home, ".claude", "skills", "evil")
 	if err := os.MkdirAll(d, 0o755); err != nil {

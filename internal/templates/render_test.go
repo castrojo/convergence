@@ -186,7 +186,7 @@ func assertPerm(t *testing.T, path string, want os.FileMode) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != want {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != want {
 		t.Errorf("%s: perm %o, want %o", filepath.Base(path), got, want)
 	}
 }
