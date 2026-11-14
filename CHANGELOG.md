@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Windows release artifacts: `convergence_windows_amd64.zip` and `convergence_windows_arm64.zip`, covered by `checksums.txt` and the SBOMs. The client config writers, `models`, `version` and the commands that talk to a remote gateway or cluster work natively, the local stack stays WSL2-only (#40).
+- `install.ps1`: PowerShell installer (`irm .../install.ps1 | iex`) that downloads the zip, verifies the sha256 against `checksums.txt`, installs to `%LOCALAPPDATA%\Programs\convergence` (or `$env:INSTALL_DIR`), adds it to the user `PATH` and never elevates. Offline tests in `tests/test_install.ps1`.
+- CI runs the unit tests of the engine-free packages and the PowerShell installer tests on `windows-latest`.
+- GoReleaser winget publisher for `jeefy.convergence`; it submits to `microsoft/winget-pkgs` once the `WINGET_GITHUB_TOKEN` secret exists (see CONTRIBUTING).
+
+### Changed
+
+- `doctor` no longer fails the `config` check on Windows for the `.env` file mode (NTFS has no POSIX mode).
+- Unit tests set `USERPROFILE` next to `HOME` (`internal/testhome`) so running them on Windows no longer writes into the real profile; file-mode assertions are skipped there.
+- `install.sh` points Windows users at the zip asset in addition to WSL2.
+
 ## [0.4.3] - 2026-11-13
 
 ### Fixed
@@ -217,9 +230,16 @@ All notable changes to this project are documented here. The format follows [Kee
 - The gateway has no authentication of its own: any local process can use your keys via `127.0.0.1:3000`, and in Kubernetes any pod the NetworkPolicy allows can.
 - Fail-closed means a Stand-In outage rejects requests.
 
-[Unreleased]: https://github.com/jeefy/convergence/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/jeefy/convergence/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/jeefy/convergence/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/jeefy/convergence/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/jeefy/convergence/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/jeefy/convergence/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/jeefy/convergence/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jeefy/convergence/compare/v0.2.5...v0.3.0
+[0.2.5]: https://github.com/jeefy/convergence/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/jeefy/convergence/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/jeefy/convergence/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/jeefy/convergence/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/jeefy/convergence/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/jeefy/convergence/compare/v0.1.4...v0.2.0
