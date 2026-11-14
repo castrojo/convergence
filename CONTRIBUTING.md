@@ -16,6 +16,7 @@ make test-e2e                  # local compose stack, tests/test_e2e_local.sh
 make test-e2e-cluster          # Kubernetes, tests/test_e2e_cluster.sh
 make test-e2e-copilot          # compose stack with the copilot-api sidecar
 bash tests/test_install.sh     # installer tests, offline
+pwsh -File tests/test_install.ps1  # Windows installer tests, offline (pwsh on any OS)
 bash tests/test_validate_configs.sh   # rendered configs against the real images
 ```
 
@@ -80,3 +81,5 @@ Maintainers tag `vX.Y.Z` on `main`. The release workflow runs the tests and GoRe
 go run github.com/goreleaser/goreleaser/v2@v2.6.1 check
 go run github.com/goreleaser/goreleaser/v2@v2.6.1 release --snapshot --clean --skip=publish,sbom
 ```
+
+**Winget.** `.goreleaser.yaml` has a `winget:` publisher for `jeefy.convergence`. It opens a PR against `microsoft/winget-pkgs` only when the release workflow has a `WINGET_GITHUB_TOKEN` secret: a fine-grained PAT with contents and pull-request write access to a fork of `winget-pkgs` under `jeefy`. Without it the manifest is only written to `dist/`. The first submission to winget-pkgs is reviewed by hand by Microsoft; later versions are mostly automatic.
