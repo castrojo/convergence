@@ -22,8 +22,8 @@ func mkSkill(t *testing.T, dir string) string {
 }
 
 func TestDiscover(t *testing.T) {
-	t.Setenv("HERMES_HOME", "")
 	home := t.TempDir()
+	t.Setenv("HERMES_HOME", filepath.Join(home, ".hermes")) // the Windows default is %LOCALAPPDATA%\hermes
 	a := mkSkill(t, filepath.Join(home, ".claude/skills/a"))
 	b := mkSkill(t, filepath.Join(home, ".hermes/skills/dev/b")) // Hermes category dir
 	c := mkSkill(t, filepath.Join(home, ".config/opencode/skills/c"))
