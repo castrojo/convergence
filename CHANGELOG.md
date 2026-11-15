@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `convergence config omp` adds a `convergence` provider (models `auto`, `pinball`, `light`, `standard`, `heavy`) to omp's model catalog configuration (`models.yml` or `models.yaml` in `$PI_CODING_AGENT_DIR`, else `~/.omp/agent`), supporting `--gateway-url`, `--dry-run`, and `restore`.
+
 ## [0.4.3] - 2026-11-13
 
 ### Fixed

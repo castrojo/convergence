@@ -156,5 +156,6 @@ omo.jsonc to "convergence/auto" or "convergence/pinball".`))
 	addClientCmd("continue", "Add Convergence to Continue (~/.continue/config.yaml)", nil, nil)
 	addClientCmd("zed", "Point Zed (~/.config/zed/settings.json) at Convergence", nil, nil)
 	addClientCmd("cline", "Point Cline/Roo Code (~/.config/Code/User/settings.json) at Convergence", nil, nil)
+	addClientCmd("omp", "Add a `convergence` provider to ~/.omp/agent/models.yml", nil, nil)
 	rootCmd.AddCommand(configCmd)
 }

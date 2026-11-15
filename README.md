@@ -215,6 +215,7 @@ Local: export `OLLAMA_CLOUD_KEY` when running `init`, `restart` or `upgrade`; it
 | Continue | `convergence config continue` | `~/.continue/config.json` |
 | Zed | `convergence config zed` | `~/.config/zed/settings.json` |
 | Cline / Roo Code | `convergence config cline` | `~/.config/Code/User/settings.json` |
+| omp | `convergence config omp` | `models.yml` (or `models.yaml` fallback) in `$PI_CODING_AGENT_DIR`, else `~/.omp/agent` |
 | Anything else | `convergence config copilot` | Nothing. Prints `OPENAI_*` / `ANTHROPIC_*` exports to `eval` in your shell. |
 
 ## CLI reference
