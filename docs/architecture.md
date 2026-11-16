@@ -14,12 +14,15 @@ Every request to the gateway goes through the same four steps.
                                   │      scores the sanitized prompt, sets the model tier
                                   │      (light / standard / heavy) and target model
                                   │
-                                  │ 3. route to upstream
+                                  │ 3. (opt-in) system_prompt: CEL request transformation on
+                                  │      each model prepends the configured system prompt
+                                  │
+                                  │ 4. route to upstream
                                   │      copilot: copilot-api :4141 ──► GitHub Copilot
                                   │      direct:  api.openai.com / api.anthropic.com
                                   │      ollama:  Ollama (host.docker.internal:11434 by default)
                                   │
-                                  │ 4. ext_proc (response) ──► Stand-In
+                                  │ 5. ext_proc (response) ──► Stand-In
                                   │      tokens in the response are restored to the original values
                                   ▼
  [client / sandboxed agent] ◄── response
@@ -29,6 +32,8 @@ Failure behavior is set in the gateway config:
 
 - Stand-In ext_proc: `failureMode: failClosed` by default. If Stand-In is unreachable, requests are rejected. `init --fail-open` (local) or `cluster install --fail-open` switch it to `failOpen`, where requests continue **unscrubbed**.
 - Pinball ext_authz: `failureMode: allow`. If Pinball is unreachable, the request goes to the standard-tier model. Pinball only chooses a model, so this doesn't affect confidentiality.
+
+For Copilot models, a `finalTransformation` rewrites system text in the converted chat completions body to plain-text `system` messages (Copilot ignored content parts and the `developer` role for Claude models).
 
 Anthropic Messages requests (`/v1/messages`) are translated by agentgateway, so Claude Code and OpenAI-style clients share the same endpoint.
 

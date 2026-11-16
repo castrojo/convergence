@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `system_prompt` (config.yaml), `init --system-prompt [--system-prompt-file F]` and `cluster install --system-prompt [--system-prompt-file F]`: off by default. When enabled, every model in the rendered agentgateway config gets a CEL request `transformation` that prepends a fixed set of behavioral guardrail lines (`internal/prompts`) plus optional extra text to OpenAI chat `messages`, Responses `instructions` and Anthropic Messages `system` on the `/v1` endpoints (agentgateway passes other paths through unchanged). The text is not scrubbed by Stand-In. The optimizer's `opt-` twin models are left without the transformation because their replays come from the request log, which already holds the prompt, and the optimizer's judge requests (`x-agw-caller: eval-replay-judge`) are exempt. The text must be valid UTF-8 without `$` or control characters. Covered by `tests/test_e2e_local.sh` and `tests/test_validate_configs.sh`.
 - Windows release artifacts: `convergence_windows_amd64.zip` and `convergence_windows_arm64.zip`, covered by `checksums.txt` and the SBOMs. The client config writers, `models`, `version` and the commands that talk to a remote gateway or cluster work natively, the local stack stays WSL2-only (#40).
 - `install.ps1`: PowerShell installer (`irm .../install.ps1 | iex`) that downloads the zip, verifies the sha256 against `checksums.txt`, installs to `%LOCALAPPDATA%\Programs\convergence` (or `$env:INSTALL_DIR`), adds it to the user `PATH` and never elevates. Offline tests in `tests/test_install.ps1`.
 - CI runs the unit tests of the engine-free packages and the PowerShell installer tests on `windows-latest`.
@@ -16,6 +17,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - `doctor` no longer fails the `config` check on Windows for the `.env` file mode (NTFS has no POSIX mode).
 - Unit tests set `USERPROFILE` next to `HOME` (`internal/testhome`) so running them on Windows no longer writes into the real profile; file-mode assertions are skipped there.
 - `install.sh` points Windows users at the zip asset in addition to WSL2.
+
+### Fixed
+
+- Copilot provider: system text sent as Anthropic `system` blocks or as Responses API `instructions` did not reach Claude models. agentgateway converts those to a system message with a list of content parts and to the `developer` role, and Copilot ignored both (observed with `claude-haiku-5.5` through copilot-api `v0.7.0`). Models served by Copilot now carry a `finalTransformation` that sends them as plain-text `system` messages. `tests/test_e2e_copilot.sh` checks all three APIs against the real provider.
 
 ## [0.4.3] - 2026-11-13
 
