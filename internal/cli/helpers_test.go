@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/jeefy/convergence/internal/config"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 const fakeEngineScript = `#!/bin/sh
@@ -49,7 +51,7 @@ func newFakeEnv(t *testing.T, engines ...string) *fakeEnv {
 		}
 	}
 	logf := filepath.Join(t.TempDir(), "calls.log")
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	t.Setenv("PATH", bin)
 	t.Setenv("FAKE_LOG", logf)
 	t.Setenv("FAKE_FAIL", "")

@@ -3,13 +3,16 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func TestConfigRoundtrip(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	testhome.Set(t, tempHome)
 
 	cfg := DefaultConfig()
 	cfg.Engine = "podman"
@@ -33,14 +36,14 @@ func TestConfigRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat failed: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("expected permissions 0600, got %o", perm)
 	}
 }
 
 func TestLoadConfigFillsDefaultsForOldConfig(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	testhome.Set(t, tempHome)
 	dir := filepath.Join(tempHome, ".convergence")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -59,7 +62,7 @@ func TestLoadConfigFillsDefaultsForOldConfig(t *testing.T) {
 
 func TestLoadConfigRejectsCorruptFile(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	testhome.Set(t, tempHome)
 	dir := filepath.Join(tempHome, ".convergence")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -85,7 +88,7 @@ func TestLoadConfigComposeProvider(t *testing.T) {
 		{"podman", "unknown", "invalid compose_provider"},
 	} {
 		t.Run(tc.engine+"/"+tc.provider, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			testhome.New(t)
 			cfg := DefaultConfig()
 			cfg.Engine, cfg.ComposeProvider = tc.engine, tc.provider
 			if err := SaveConfig(cfg); err != nil {

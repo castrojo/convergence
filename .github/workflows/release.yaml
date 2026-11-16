@@ -27,7 +27,9 @@ jobs:
         run: go test ./...
 
       - name: Installer tests
-        run: bash tests/test_install.sh
+        run: |
+          bash tests/test_install.sh
+          pwsh -NoProfile -File tests/test_install.ps1
 
       - name: Install syft (SBOM)
         uses: anchore/sbom-action/download-syft@v0.24.3
@@ -40,3 +42,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}

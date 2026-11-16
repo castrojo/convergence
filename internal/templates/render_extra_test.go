@@ -8,6 +8,8 @@ import (
 
 	"github.com/jeefy/convergence/internal/config"
 	"gopkg.in/yaml.v3"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func TestResolveImages_nilConfigReturnsPinned(t *testing.T) {
@@ -49,7 +51,7 @@ func TestProviderRef_mapsFamiliesAndRejectsUnknown(t *testing.T) {
 }
 
 func TestRenderAssets_errorPaths(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.New(t)
 	t.Run("target dir is a file", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "file")
 		if err := os.WriteFile(f, nil, 0o600); err != nil {
@@ -87,7 +89,7 @@ func TestRenderAssets_errorPaths(t *testing.T) {
 }
 
 func TestRenderAssets_flagMatrixRenders(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.New(t)
 	for _, p := range []config.ProviderType{config.ProviderCopilot, config.ProviderDirect, config.ProviderOllama} {
 		for _, sbx := range []config.SandboxType{config.SandboxNone, config.SandboxOpenShell} {
 			t.Run(string(p)+"/"+string(sbx), func(t *testing.T) {

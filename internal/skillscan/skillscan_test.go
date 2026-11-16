@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func mkSkill(t *testing.T, dir string) string {
@@ -22,8 +24,7 @@ func mkSkill(t *testing.T, dir string) string {
 }
 
 func TestDiscover(t *testing.T) {
-	t.Setenv("HERMES_HOME", "")
-	home := t.TempDir()
+	home := testhome.New(t)
 	a := mkSkill(t, filepath.Join(home, ".claude/skills/a"))
 	b := mkSkill(t, filepath.Join(home, ".hermes/skills/dev/b")) // Hermes category dir
 	c := mkSkill(t, filepath.Join(home, ".config/opencode/skills/c"))

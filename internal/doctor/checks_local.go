@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -15,7 +16,8 @@ import (
 	"github.com/jeefy/convergence/internal/skillscan"
 )
 
-// CheckConfig verifies config.yaml exists and parses and that .env is 0600.
+// CheckConfig verifies config.yaml exists and parses and that .env is 0600
+// (NTFS has no POSIX mode, so the mode is not checked on Windows).
 // The loaded config is nil when the config is unusable.
 func CheckConfig(dir string) (Result, *config.Config) {
 	const name = "config"
@@ -37,6 +39,8 @@ func CheckConfig(dir string) (Result, *config.Config) {
 	switch {
 	case err != nil:
 		return Result{name, Fail, fmt.Sprintf("config parses but %s is missing: %v", envPath, err), "run 'convergence init' to regenerate secrets"}, cfg
+	case runtime.GOOS == "windows":
+		return Result{name, Pass, fmt.Sprintf("%s parses (provider=%s, engine=%s); .env mode not checked on Windows", cfgPath, cfg.Provider, cfg.Engine), ""}, cfg
 	case st.Mode().Perm() != 0o600:
 		return Result{name, Fail, fmt.Sprintf("%s has mode %04o, want 0600", envPath, st.Mode().Perm()), "chmod 600 " + envPath}, cfg
 	}

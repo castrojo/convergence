@@ -38,7 +38,7 @@ detect_os_arch() {
     darwin) OS="darwin" ;;
     linux) OS="linux" ;;
     mingw* | msys* | cygwin* | windows*)
-      log_error "Windows is not supported. Use WSL2 (Linux) and run this installer inside it."
+      log_error "Windows is not supported by this installer. Download convergence_windows_<arch>.zip from the GitHub release, or use WSL2 (Linux) and run this installer inside it."
       return 1
       ;;
     *)
