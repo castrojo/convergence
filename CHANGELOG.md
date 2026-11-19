@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `convergence config paseo`: adds providers `convergence-claude` (extends `claude`) and `convergence-opencode` (extends `opencode`) under `agents.providers` in Paseo's `config.json` (`$PASEO_HOME`, else `~/.paseo`). The built-in providers are not changed. The Claude provider maps Claude Code's haiku/sonnet/opus slots to `light`/`standard`/`heavy`, disallows `WebSearch` and lists `auto`, the tiers and the local `models.yaml` passthrough names. A created file is `0600`. Covered by `tests/test_e2e_local.sh`.
+
 ### Fixed
 
 - Local stack: the compose `pinball` service did not set `PINBALL_CONFIG`, so Pinball ignored the mounted `pinball.yaml` and served its packaged model pool, thresholds and keywords. `models.yaml` overrides and `pinball:` settings never reached it. The service now sets `PINBALL_CONFIG`. The rendered `pinball.yaml` (local and the Kubernetes `pinball-config` ConfigMap) now includes Pinball 0.7.7's `heavy_keywords` and `light_keywords`, because a mounted file replaces the packaged one whole and the Kubernetes deployment was routing without keyword scoring. Covered by `tests/test_e2e_local.sh`.
