@@ -299,13 +299,13 @@ data:
       {{ . }}
 {{- end }}
 {{- end }}
-    heavy_keywords:
-{{- range .R.HeavyKeywords }}
-      - {{ . }}
+    heavy_keywords:{{ if not .R.HeavyKeywordLines }} []{{ end }}
+{{- range .R.HeavyKeywordLines }}
+      {{ . }}
 {{- end }}
-    light_keywords:
-{{- range .R.LightKeywords }}
-      - {{ . }}
+    light_keywords:{{ if not .R.LightKeywordLines }} []{{ end }}
+{{- range .R.LightKeywordLines }}
+      {{ . }}
 {{- end }}
 ---
 apiVersion: apps/v1

@@ -664,7 +664,7 @@ func TestPinballLoadsRenderedConfig(t *testing.T) {
 		t.Error("pinball service must set PINBALL_CONFIG to the mounted pinball.yaml")
 	}
 	pb := files["pinball.yaml"]
-	for _, want := range []string{"heavy_keywords:", "  - architecture", "  - race condition", "light_keywords:", "  - tl;dr"} {
+	for _, want := range []string{"heavy_keywords:", `  - "architecture"`, `  - "race condition"`, "light_keywords:", `  - "tl;dr"`} {
 		if !strings.Contains(pb, want) {
 			t.Errorf("pinball.yaml missing %q:\n%s", want, pb)
 		}

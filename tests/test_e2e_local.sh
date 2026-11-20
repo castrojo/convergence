@@ -374,6 +374,25 @@ assert [m["role"] for m in r["messages"]] == ["user"] and r["messages"][0]["cont
   wait_for "gateway after restart" 30 curl -sf "http://127.0.0.1:$GW/v1/models"
   wait_for "stand-in after restart" 30 curl -sf "http://127.0.0.1:$STANDIN/metrics"
 
+  echo "==> models.yaml pinball keywords and context scoring reach Pinball"
+  printf 'pinball:\n  heavy_keywords: [ursache]\n  light_keywords: []\n  scoring: {large_context_tokens: 60000}\n' \
+    >"$cfgdir/models.yaml"
+  "$BIN" restart
+  wait_for "pinball after models.yaml" 30 curl -sf "http://127.0.0.1:$PINBALL/metrics"
+  grep -q 'large_context_tokens: 60000' "$cfgdir/pinball.yaml" || fail "scoring.large_context_tokens not rendered"
+  pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"Was ist die Ursache? Please investigate"}]}')"
+  echo "$pr" | grep -q '"reason":"kw:ursache"' || fail "models.yaml heavy_keywords did not replace the defaults: $pr"
+  pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"Generate a title for this chat"}]}')"
+  echo "$pr" | grep -q 'light:' && fail "light_keywords: [] still scored a light keyword: $pr"
+  rm "$cfgdir/models.yaml"
+  "$BIN" restart
+  wait_for "pinball after models.yaml removed" 30 curl -sf "http://127.0.0.1:$PINBALL/metrics"
+  pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"please investigate this"}]}')"
+  echo "$pr" | grep -q 'kw:investigate' || fail "default heavy_keywords not restored: $pr"
+
   echo "==> upgrade (re-render, pull pinned images, recreate)"
   "$BIN" upgrade
   wait_for "gateway after upgrade" 30 curl -sf "http://127.0.0.1:$GW/v1/models"
