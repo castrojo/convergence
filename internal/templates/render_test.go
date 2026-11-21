@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jeefy/convergence/internal/config"
+	"github.com/jeefy/convergence/internal/prompts"
 	"gopkg.in/yaml.v3"
 )
 
@@ -186,7 +187,7 @@ func assertPerm(t *testing.T, path string, want os.FileMode) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != want {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != want {
 		t.Errorf("%s: perm %o, want %o", filepath.Base(path), got, want)
 	}
 }
@@ -492,5 +493,242 @@ func TestExtProcTimeoutRendered(t *testing.T) {
 	ag := files["agentgateway.yaml"]
 	if !strings.Contains(ag, "requestTimeout: 60s") || strings.Contains(ag, "requestTimeout: 5s") {
 		t.Errorf("override must render requestTimeout: 60s:\n%s", ag)
+	}
+}
+
+// system_prompt renders a CEL request transformation on every model whose
+// embedded prompt literal decodes back to the exact configured text.
+func TestSystemPromptOffByDefaultAndRenderedWhenSet(t *testing.T) {
+	_, files := render(t, func(c *config.Config) {})
+	if strings.Contains(files["agentgateway.yaml"], "transformation:") {
+		t.Errorf("prompt transformation must not render by default")
+	}
+	sp := prompts.Settings{Enabled: true, Extra: "key: looks like yaml\n- and a \"quoted\" list # with comment"}
+	_, files = render(t, func(c *config.Config) {
+		c.SystemPrompt = sp
+		c.RequestLogDB = "postgres://u:p@db/x"
+	})
+	ag := files["agentgateway.yaml"]
+	var parsed struct {
+		LLM struct {
+			Models []struct {
+				Name           string
+				Transformation map[string]string
+			}
+		} `yaml:"llm"`
+	}
+	if err := yaml.Unmarshal([]byte(ag), &parsed); err != nil {
+		t.Fatalf("rendered config is not YAML: %v\n%s", err, ag)
+	}
+	if len(parsed.LLM.Models) < 2 {
+		t.Fatalf("expected models in:\n%s", ag)
+	}
+	optTwins := 0
+	for _, m := range parsed.LLM.Models {
+		// optimizer replays come from the request log, which already holds the prompt
+		if strings.HasPrefix(m.Name, "opt-") {
+			optTwins++
+			if len(m.Transformation) != 0 {
+				t.Errorf("model %s: opt- twins must not prepend the prompt again", m.Name)
+			}
+			continue
+		}
+		for _, k := range []string{"messages", "system", "instructions"} {
+			if !strings.Contains(m.Transformation[k], sp.CELString()) {
+				t.Errorf("model %s: transformation %s missing prompt literal: %q", m.Name, k, m.Transformation[k])
+			}
+		}
+	}
+	if optTwins == 0 {
+		t.Errorf("expected opt- twin models to be rendered")
+	}
+	bad := config.DefaultConfig()
+	bad.StandinSalt = salt
+	bad.SystemPrompt = prompts.Settings{Enabled: true, Extra: "use $HOME"}
+	if err := RenderAssets(bad, t.TempDir()); err == nil {
+		t.Errorf("'$' in system prompt must be rejected")
+	}
+}
+
+// Passthrough models are served to clients like the tier models, so they get the prompt too.
+func TestSystemPromptOnPassthroughModels(t *testing.T) {
+	dir, _ := render(t, func(c *config.Config) { c.Provider = config.ProviderCopilot })
+	y := "passthrough:\n  fable: {provider: copilot, model: claude-fable-5}\n"
+	if err := os.WriteFile(filepath.Join(dir, "models.yaml"), []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Provider = config.ProviderCopilot
+	cfg.SystemPrompt = prompts.Settings{Enabled: true}
+	if err := RenderAssets(cfg, dir); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "agentgateway.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		LLM struct {
+			Models []struct {
+				Name           string
+				Transformation map[string]string
+			}
+		} `yaml:"llm"`
+	}
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("rendered config is not YAML: %v", err)
+	}
+	for _, m := range parsed.LLM.Models {
+		if m.Name != "fable" {
+			continue
+		}
+		for _, k := range []string{"messages", "system", "instructions"} {
+			if !strings.Contains(m.Transformation[k], cfg.SystemPrompt.CELString()) {
+				t.Errorf("passthrough model: transformation %s missing prompt literal: %q", k, m.Transformation[k])
+			}
+		}
+		return
+	}
+	t.Fatalf("passthrough model not rendered:\n%s", raw)
+}
+
+// Copilot ignores, for Claude models, system text sent as content parts or as
+// the developer role. Every model served by Copilot must normalise it; other
+// providers must be left alone.
+func TestCopilotSystemTextNormalised(t *testing.T) {
+	type parsedModels struct {
+		LLM struct {
+			Models []struct {
+				Name                string
+				Provider            struct{ Reference string }
+				FinalTransformation map[string]string `yaml:"finalTransformation"`
+			}
+		} `yaml:"llm"`
+	}
+	_, files := render(t, func(c *config.Config) {
+		c.Provider = config.ProviderCopilot
+		c.RequestLogDB = "postgres://db/x"
+	})
+	var p parsedModels
+	if err := yaml.Unmarshal([]byte(files["agentgateway.yaml"]), &p); err != nil {
+		t.Fatalf("rendered config is not YAML: %v", err)
+	}
+	if len(p.LLM.Models) < 6 {
+		t.Fatalf("expected tier models and opt- twins, got %d", len(p.LLM.Models))
+	}
+	for _, m := range p.LLM.Models {
+		expr := m.FinalTransformation["messages"]
+		if m.Provider.Reference != "copilot-completions" {
+			t.Fatalf("copilot render has model %s on %s", m.Name, m.Provider.Reference)
+		}
+		for _, want := range []string{`m.role in ["system", "developer"]`, `{"role": "system", "content":`, `.join("\n\n")`, "m.content != null"} {
+			if !strings.Contains(expr, want) {
+				t.Errorf("model %s: finalTransformation lacks %q: %q", m.Name, want, expr)
+			}
+		}
+	}
+	_, files = render(t, func(c *config.Config) {})
+	if strings.Contains(files["agentgateway.yaml"], "finalTransformation:") {
+		t.Errorf("non-Copilot models must not be rewritten")
+	}
+}
+
+// With the request log on, the x-agw-caller header is stored as
+// request_logs.agentgateway_user, which Pinball's optimizer and insights read.
+func TestRequestLogRecordsCaller(t *testing.T) {
+	type parsed struct {
+		Config struct {
+			StandardAttributes struct{ User string } `yaml:"standardAttributes"`
+		}
+	}
+	_, files := render(t, func(c *config.Config) { c.RequestLogDB = "postgres://db/x" })
+	var p parsed
+	if err := yaml.Unmarshal([]byte(files["agentgateway.yaml"]), &p); err != nil {
+		t.Fatalf("rendered config is not YAML: %v", err)
+	}
+	if want := `default(request.headers["x-agw-caller"], null)`; p.Config.StandardAttributes.User != want {
+		t.Errorf("standardAttributes.user = %q, want %q", p.Config.StandardAttributes.User, want)
+	}
+	_, files = render(t, func(c *config.Config) {})
+	if strings.Contains(files["agentgateway.yaml"], "standardAttributes:") {
+		t.Errorf("standardAttributes must only render with the request log")
+	}
+}
+
+// pinball falls back to its packaged pool unless PINBALL_CONFIG names the mounted file,
+// so models.yaml overrides would be ignored. Keyword lists must be rendered: the mounted
+// file replaces the packaged one, keywords included.
+func TestPinballLoadsRenderedConfig(t *testing.T) {
+	_, files := render(t, func(*config.Config) {})
+	if !strings.Contains(files[ComposeFile], "PINBALL_CONFIG: /etc/pinball/pinball.yaml") {
+		t.Error("pinball service must set PINBALL_CONFIG to the mounted pinball.yaml")
+	}
+	pb := files["pinball.yaml"]
+	for _, want := range []string{"heavy_keywords:", `  - "architecture"`, `  - "race condition"`, "light_keywords:", `  - "tl;dr"`} {
+		if !strings.Contains(pb, want) {
+			t.Errorf("pinball.yaml missing %q:\n%s", want, pb)
+		}
+	}
+}
+
+func TestDiscoverModels(t *testing.T) {
+	_, off := render(t, func(c *config.Config) { c.Provider = config.ProviderCopilot })
+	for _, f := range []string{"agentgateway.yaml", "docker-compose.yaml"} {
+		for _, s := range []string{"PINBALL_DISCOVERY", "pinball-live", `name: "*"`} {
+			if strings.Contains(off[f], s) {
+				t.Errorf("%s renders %q without discover_models", f, s)
+			}
+		}
+	}
+
+	_, on := render(t, func(c *config.Config) {
+		c.Provider = config.ProviderCopilot
+		c.DiscoverModels = true
+		c.RequestLogDB = "postgres://u:pw@db:5432/ag"
+	})
+	ag, dc := on["agentgateway.yaml"], on["docker-compose.yaml"]
+	for _, want := range []string{"model: pinball-live", "- name: pinball-live", `- name: "opt-*"`, `- name: "*"`, "llmRequest.model.substring(4)"} {
+		if !strings.Contains(ag, want) {
+			t.Errorf("agentgateway.yaml missing %q", want)
+		}
+	}
+	if strings.Contains(ag, "- name: opt-claude") {
+		t.Errorf("copilot opt- twins duplicate the opt-* route:\n%s", ag)
+	}
+	for _, want := range []string{"PINBALL_DISCOVERY_URL: http://copilot-api:4141/v1/models", "PINBALL_DISCOVERY_CACHE: /tmp/pinball-discovery.json"} {
+		if !strings.Contains(dc, want) {
+			t.Errorf("docker-compose.yaml missing %q", want)
+		}
+	}
+
+	_, ol := render(t, func(c *config.Config) {
+		c.Provider = config.ProviderOllama
+		c.OllamaURL = "http://host.docker.internal:11434/"
+		c.DiscoverModels = true
+		c.RequestLogDB = "postgres://u:pw@db:5432/ag"
+	})
+	if !strings.Contains(ol["docker-compose.yaml"], "PINBALL_DISCOVERY_URL: http://host.docker.internal:11434/v1/models") {
+		t.Errorf("ollama discovery URL not rendered:\n%s", ol["docker-compose.yaml"])
+	}
+	if !strings.Contains(ol["agentgateway.yaml"], "- name: opt-") {
+		t.Error("ollama opt- twins (pool name differs from upstream id) must stay")
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Provider = config.ProviderDirect
+	cfg.DiscoverModels = true
+	if err := RenderAssets(cfg, t.TempDir()); err == nil || !strings.Contains(err.Error(), "discover_models needs provider copilot or ollama") {
+		t.Errorf("direct + discover_models: err = %v", err)
+	}
+}
+
+func TestTracingCarriesPinballScoreAndEstTokens(t *testing.T) {
+	_, files := render(t, func(c *config.Config) {
+		c.OTel = config.OTel{Endpoint: "localhost:4317"}
+	})
+	for _, k := range []string{`pinball.score: 'default(string(extauthz.score), "")'`, `pinball.est_tokens: 'default(string(extauthz.est_tokens), "")'`} {
+		if !strings.Contains(files["agentgateway.yaml"], k) {
+			t.Errorf("tracing attributes missing %s", k)
+		}
 	}
 }

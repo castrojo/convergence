@@ -1,3 +1,8 @@
+{{- define "copilotSystem" }}
+          finalTransformation:
+            messages: |-
+              llmRequest.messages.map(m, m.role in ["system", "developer"] && has(m.content) && m.content != null ? {"role": "system", "content": type(m.content) == string ? m.content : m.content.filter(p, has(p.text)).map(p, p.text).join("\n\n")} : m)
+{{- end }}
 ---
 apiVersion: v1
 kind: Namespace
@@ -50,6 +55,12 @@ stringData:
     config:
       statsAddr: 0.0.0.0:15020
       connectionTerminationDeadline: 600s
+{{- if .RequestLogEnabled }}
+      # request_logs.agentgateway_user: the caller a client names in x-agw-caller.
+      # Pinball's optimizer (per-caller results, eval-* exclusion) and insights read it.
+      standardAttributes:
+        user: 'default(request.headers["x-agw-caller"], null)'
+{{- end }}
       logging:
         format: json
 {{- if .RequestLogEnabled }}
@@ -83,6 +94,7 @@ stringData:
           pinball.model: 'default(extauthz.model, "")'
           pinball.reason: 'default(extauthz.reason, "")'
           pinball.score: 'default(string(extauthz.score), "")'
+          pinball.est_tokens: 'default(string(extauthz.est_tokens), "")'
 {{- end }}
     gateways:
       default:
@@ -179,6 +191,9 @@ stringData:
 {{- range .Entries }}
                 - {when: 'default(extauthz.model, "") == "{{ .Name }}"', model: pinball-{{ .Name }}}
 {{- end }}
+{{- if .DiscoverModels }}
+                - {when: 'default(extauthz.model, "") != ""', model: pinball-live}
+{{- end }}
                 - {model: pinball-{{ .Fallback }}}
         - name: pinball
           routing: *pinball_routing
@@ -197,26 +212,66 @@ stringData:
             conditional:
               targets:
                 - {model: pinball-{{ .R.TierModel "heavy" }}}
+      # Copilot models carry a finalTransformation on the converted chat completions
+      # body: Copilot ignores, for Claude models, a system message whose content is a
+      # list of parts and the developer role. Both become one plain-text system message.
       models:
 {{- range .Entries }}
         - name: pinball-{{ .Name }}
           visibility: internal
           provider: {reference: {{ .Ref }}}
           params: {model: {{ .Upstream }}}
+{{- if eq .Ref "copilot-completions" }}{{ template "copilotSystem" }}{{ end }}
+{{- with $.SystemPrompt.YAMLTransformation 10 }}
+{{ . }}
+{{- end }}
 {{- end }}
 {{- if .OptimizerDSN }}
         # Public twins of the internal pinball-<id> models for the optimizer's
         # candidate replays (CronJob sets PINBALL_OPT_MODEL_PREFIX=opt-).
+        # No system prompt transformation here: replays are built from the
+        # request log, which already holds the prepended prompt.
 {{- range .Entries }}
+{{- /* with --discover-models, "opt-*" already serves a twin whose name is its upstream id */}}
+{{- if not (and $.DiscoverModels (eq .Name .Upstream) (eq .Ref "copilot-completions")) }}
         - name: opt-{{ .Name }}
           provider: {reference: {{ .Ref }}}
           params: {model: {{ .Upstream }}}
+{{- if eq .Ref "copilot-completions" }}{{ template "copilotSystem" }}{{ end }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- range .Passthrough }}
         - name: {{ .Name }}
           provider: {reference: {{ .Ref }}}
           params: {model: {{ .Upstream }}}
+{{- if eq .Ref "copilot-completions" }}{{ template "copilotSystem" }}{{ end }}
+{{- with $.SystemPrompt.YAMLTransformation 10 }}
+{{ . }}
+{{- end }}
+{{- end }}
+{{- if .DiscoverModels }}
+        # --discover-models: Pinball picks an id from copilot-api's model list; it
+        # is sent upstream as is. Other ids go to copilot-api unchanged.
+        - name: pinball-live
+          visibility: internal
+          provider: {reference: copilot-completions}{{ template "copilotSystem" }}
+{{- with $.SystemPrompt.YAMLTransformationModel 10 "default(extauthz.model, llmRequest.model)" }}
+{{ . }}
+{{- end }}
+{{- if .OptimizerDSN }}
+        - name: "opt-*"
+          provider: {reference: copilot-completions}{{ template "copilotSystem" }}
+          transformation:
+            # substring, not stripPrefix: agentgateway cannot reverse it, so
+            # /v1/models lists one "opt-*" entry instead of a twin of every model.
+            model: 'llmRequest.model.substring(4)'
+{{- end }}
+        - name: "*"
+          provider: {reference: copilot-completions}{{ template "copilotSystem" }}
+{{- with $.SystemPrompt.YAMLTransformation 10 }}
+{{ . }}
+{{- end }}
 {{- end }}
 ---
 apiVersion: v1
@@ -226,7 +281,7 @@ metadata:
   namespace: {{ .Namespace }}
 data:
   pinball.yaml: |
-    # Schema of ghcr.io/jeefy/pinball:0.7.6 (heavy tier, thresholds, prompt_tokens).
+    # Schema of ghcr.io/jeefy/pinball:0.8.0 (heavy tier, thresholds, prompt_tokens).
     models:
 {{- range .Entries }}
       {{ .Name }}: {prompt_tokens: {{ .PromptTokens }}}
@@ -243,6 +298,14 @@ data:
 {{- range .R.ScoringLines }}
       {{ . }}
 {{- end }}
+{{- end }}
+    heavy_keywords:{{ if not .R.HeavyKeywordLines }} []{{ end }}
+{{- range .R.HeavyKeywordLines }}
+      {{ . }}
+{{- end }}
+    light_keywords:{{ if not .R.LightKeywordLines }} []{{ end }}
+{{- range .R.LightKeywordLines }}
+      {{ . }}
 {{- end }}
 ---
 apiVersion: apps/v1
@@ -456,6 +519,13 @@ spec:
           env:
             - name: PINBALL_CONFIG
               value: /etc/pinball/pinball.yaml
+{{- if .DiscoverModels }}
+            # pinball.yaml stays the fallback when copilot-api does not answer.
+            - name: PINBALL_DISCOVERY_URL
+              value: http://copilot-api.{{ .Namespace }}.svc.cluster.local:4141/v1/models
+            - name: PINBALL_DISCOVERY_CACHE
+              value: /var/cache/pinball/discovery.json
+{{- end }}
 {{- if .OptimizerDSN }}
             - name: PINBALL_OVERLAY_PATH
               value: /var/lib/pinball/overlay.yaml
@@ -487,10 +557,19 @@ spec:
               mountPath: /var/lib/pinball
               readOnly: true
 {{- end }}
+{{- if .DiscoverModels }}
+            - name: discovery-cache
+              mountPath: /var/cache/pinball
+{{- end }}
       volumes:
         - name: config
           configMap:
             name: pinball-config
+{{- if .DiscoverModels }}
+        # Per pod: survives container restarts (the overlay PVC is read-only here).
+        - name: discovery-cache
+          emptyDir: {sizeLimit: 16Mi}
+{{- end }}
 {{- if .OptimizerDSN }}
         - name: overlay
           persistentVolumeClaim:
@@ -946,6 +1025,9 @@ spec:
   ingress:
     - from:
         - podSelector: {matchLabels: {app: agentgateway}}
+{{- if .DiscoverModels }}
+        - podSelector: {matchLabels: {app: pinball}}
+{{- end }}
       ports:
         - {protocol: TCP, port: 4141}
 {{- end }}

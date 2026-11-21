@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func TestParseSandbox(t *testing.T) {
@@ -35,7 +37,7 @@ func TestSaveConfig_failsWhenHomeIsFile(t *testing.T) {
 	if err := writeEmpty(home); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	if err := SaveConfig(DefaultConfig()); err == nil {
 		t.Error("want error")
 	}

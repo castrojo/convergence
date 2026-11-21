@@ -32,10 +32,17 @@ type initFlags struct {
 	failOpen     bool
 	requestLogDB string
 	otel         config.OTel
-	patternsFile string
-	ollamaLight  string
-	ollamaStd    string
-	ollamaHeavy  string
+	systemPrompt bool
+	// systemPromptSet is true when --system-prompt was given, so
+	// --system-prompt=false turns a saved setting off instead of being ignored.
+	systemPromptSet bool
+	discover        bool
+	discoverSet     bool
+	promptFile      string
+	patternsFile    string
+	ollamaLight     string
+	ollamaStd       string
+	ollamaHeavy     string
 
 	composeProvider string
 
@@ -182,6 +189,28 @@ func resolveConfig(cfg *config.Config, f initFlags, p *prompter) error {
 	if err := cfg.OTel.Validate(); err != nil {
 		return err
 	}
+	if f.systemPromptSet {
+		cfg.SystemPrompt.Enabled = f.systemPrompt
+	}
+	if f.discoverSet {
+		cfg.DiscoverModels = f.discover
+	}
+	if cfg.DiscoverModels && cfg.Provider == config.ProviderDirect {
+		return fmt.Errorf("--discover-models needs provider copilot or ollama: direct has no single model list for pinball")
+	}
+	if f.promptFile != "" {
+		extra, err := os.ReadFile(f.promptFile)
+		if err != nil {
+			return fmt.Errorf("reading --system-prompt-file: %w", err)
+		}
+		cfg.SystemPrompt.Extra = string(extra)
+		if !cfg.SystemPrompt.Enabled {
+			return fmt.Errorf("--system-prompt-file needs --system-prompt (or system_prompt.enabled in config.yaml)")
+		}
+	}
+	if err := cfg.SystemPrompt.Validate(); err != nil {
+		return err
+	}
 	if f.patternsFile != "" {
 		abs, err := filepath.Abs(f.patternsFile)
 		if err != nil {
@@ -307,6 +336,8 @@ prompts and confirmations).`,
 		cfg.Engine = eng.Name()
 
 		p := &prompter{in: bufio.NewReader(os.Stdin), out: os.Stdout, yes: initOpts.yes}
+		initOpts.systemPromptSet = cmd.Flags().Changed("system-prompt")
+		initOpts.discoverSet = cmd.Flags().Changed("discover-models")
 		if err := resolveConfig(cfg, initOpts, p); err != nil {
 			return err
 		}
@@ -355,6 +386,9 @@ func init() {
 	f.StringVar(&initOpts.otel.Endpoint, "otel-endpoint", "", "Export OTLP traces to this collector host:port (default: off)")
 	f.StringVar(&initOpts.otel.Protocol, "otel-protocol", "", "OTLP protocol: grpc (default) or http")
 	f.Float64Var(&initOpts.otel.Sample, "otel-sample", 0, "Trace sampling rate 0..1 (default 1)")
+	f.BoolVar(&initOpts.systemPrompt, "system-prompt", false, "Prepend Convergence's default system prompt (behavioral guardrails) to every chat request (default: off; the setting is saved, --system-prompt=false turns it off again)")
+	f.BoolVar(&initOpts.discover, "discover-models", false, "Let Pinball build its model pool from the upstream's /v1/models (copilot or ollama; the static pool stays the fallback and the light/standard/heavy aliases). Saved; --discover-models=false turns it off")
+	f.StringVar(&initOpts.promptFile, "system-prompt-file", "", "File with extra system prompt lines, added after the defaults (needs --system-prompt or system_prompt.enabled in config.yaml)")
 	f.StringVar(&initOpts.patternsFile, "standin-patterns-file", "", "Stand-In patterns.yaml to mount instead of the image default (replaces it, no merge)")
 	f.StringVar(&initOpts.ollamaLight, "ollama-model-light", "", "Ollama model for the light tier (default from 'convergence models')")
 	f.StringVar(&initOpts.ollamaStd, "ollama-model-standard", "", "Ollama model for the standard tier")

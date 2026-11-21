@@ -94,6 +94,8 @@ run_suite() {
   echo; echo "################ engine: $engine ################"
   TEST_HOME="$(mktemp -d -t convergence-e2e-XXXXXX)"
   export HOME="$TEST_HOME"
+  # Never the real Paseo daemon config, also when run from a Paseo agent.
+  export PASEO_HOME="$TEST_HOME/.paseo"
   local cfgdir="$TEST_HOME/.convergence"
   local compose_args=()
   local original_docker_host="${DOCKER_HOST-}" docker_host_set="${DOCKER_HOST+x}"
@@ -123,8 +125,15 @@ run_suite() {
   wait_for "stub upstream" 20 curl -sf "http://127.0.0.1:$sport/v1/models"
 
   echo "==> convergence init (provider ollama -> stub on host port $sport)"
+  local ptoken=""
   if "$BIN" init --help 2>&1 | grep -q -- '--yes'; then
-    "$BIN" init --yes --provider ollama --ollama-url "http://host.docker.internal:$sport" --engine "$engine" "${compose_args[@]}"
+    # a token Stand-In would scrub in a user message: the system prompt is added after
+    # scrubbing, so it must reach the upstream verbatim (documented: keep secrets out of it)
+    ptoken="ghp_$(python3 -c 'import secrets,string; print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(36)))')"
+    printf 'prompt token %s\nE2E-EXTRA-PROMPT-LINE\n' "$ptoken" >"$TEST_HOME/extra-prompt.txt"
+    "$BIN" init --yes --provider ollama --ollama-url "http://host.docker.internal:$sport" --engine "$engine" "${compose_args[@]}" \
+      --system-prompt --system-prompt-file "$TEST_HOME/extra-prompt.txt"
+    grep -q '^system_prompt:' "$cfgdir/config.yaml" || fail "system_prompt not persisted in config.yaml"
   else
     printf '3\nhttp://host.docker.internal:%s\n' "$sport" | "$BIN" init
   fi
@@ -161,6 +170,15 @@ run_suite() {
   pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
     -d '{"model":"auto","messages":[{"role":"user","content":"How do I debug this distributed security race condition?"}]}')"
   echo "$pr" | grep -q model || fail "unexpected pinball response: $pr"
+  # pinball must serve the rendered pinball.yaml (PINBALL_CONFIG), not its packaged pool
+  local plog
+  plog="$("$BIN" logs pinball 2>&1)" || fail "logs pinball failed"
+  echo "$plog" | grep -qF "tiers={'light': ['claude-haiku-5.5'], 'standard': ['claude-sonnet-5.5'], 'heavy': ['claude-opus-5.5']}" \
+    || fail "pinball did not load the rendered pinball.yaml: $(echo "$plog" | grep 'pinball starting' | tail -1)"
+  # rendered keyword lists are live: one heavy keyword scores kw:<word>
+  pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"please investigate this"}]}')"
+  echo "$pr" | grep -q 'kw:investigate' || fail "rendered heavy_keywords not applied: $pr"
 
   echo "==> Baseline stats (before real traffic)"
   local base_matches base_restored base_dec
@@ -201,6 +219,57 @@ print(out)')"
   echo "$received" | grep -qF "$token" && fail "RAW token leaked to upstream"
   [ "$(echo "$received" | grep -c '<<secret-')" -ge 2 ] || fail "upstream did not receive placeholders in both requests: $received"
   echo "$received" | grep -q '"stream":true' || fail "upstream never saw the stream request"
+  # system_prompt: both chat requests must start with one system message holding defaults + extra
+  echo "$received" | python3 -c '
+import sys, json
+n = 0
+for l in sys.stdin:
+    l = l.strip()
+    if not l: continue
+    r = json.loads(l)
+    if "messages" not in r: continue
+    n += 1
+    m = r["messages"]
+    assert m[0]["role"] == "system", m[0]
+    assert "Trust only `git diff`" in m[0]["content"], m[0]
+    assert m[0]["content"].rstrip().endswith("E2E-EXTRA-PROMPT-LINE"), m[0]
+    assert sum(1 for x in m if x["role"] == "system") == 1, m
+assert n >= 2, n
+' || fail "upstream requests lack the prepended system prompt: $received"
+  echo "$received" | grep -qF "prompt token $ptoken" || fail "system prompt text was altered before reaching the upstream (expected: added after Stand-In)"
+
+  echo "==> Anthropic Messages API gets the system prompt in the system block"
+  # the ollama provider is OpenAI-compatible, so agentgateway converts /v1/messages into a
+  # Responses API call: the Anthropic system block arrives upstream as `instructions`
+  curl -sf -m 30 "http://127.0.0.1:$GW/v1/messages" -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -d '{"model":"auto","max_tokens":32,"system":"CLIENT-SYSTEM","messages":[{"role":"user","content":"hello"}]}' >/dev/null \
+    || fail "anthropic messages request failed"
+  curl -sf "http://127.0.0.1:$sport/_received" | tail -n 1 | python3 -c '
+import sys, json
+r = json.loads(sys.stdin.read())
+ins = r.get("instructions", "")
+assert ins.startswith("Don" + chr(39) + "t trust work summaries"), r
+assert "E2E-EXTRA-PROMPT-LINE" in ins and ins.rstrip().endswith("CLIENT-SYSTEM"), r
+' || fail "anthropic request: system prompt not prepended to system block"
+
+  echo "==> Responses API gets the system prompt as instructions (null instructions included)"
+  curl -sf -m 30 "http://127.0.0.1:$GW/v1/responses" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","instructions":null,"input":"hello"}' >/dev/null || fail "responses request failed"
+  curl -sf "http://127.0.0.1:$sport/_received" | tail -n 1 | python3 -c '
+import sys, json
+r = json.loads(sys.stdin.read())
+ins = r.get("instructions") or ""
+assert ins.startswith("Don" + chr(39) + "t trust work summaries") and ins.rstrip().endswith("E2E-EXTRA-PROMPT-LINE"), r
+' || fail "responses request: system prompt not set as instructions"
+
+  echo "==> Optimizer judge requests (x-agw-caller: eval-replay-judge) are not prepended"
+  curl -sf -m 30 "http://127.0.0.1:$GW/v1/chat/completions" -H 'Content-Type: application/json' -H 'x-agw-caller: eval-replay-judge' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"judge probe"}]}' >/dev/null || fail "judge-caller request failed"
+  curl -sf "http://127.0.0.1:$sport/_received" | tail -n 1 | python3 -c '
+import sys, json
+r = json.loads(sys.stdin.read())
+assert [m["role"] for m in r["messages"]] == ["user"] and r["messages"][0]["content"] == "judge probe", r
+' || fail "judge-caller request must reach the upstream without the system prompt"
 
   echo "==> Asserting metrics"
   sleep 1
@@ -250,6 +319,18 @@ print(out)')"
   "$BIN" config claude-code restore >/dev/null
   if [ -e "$cc" ]; then grep -q "localhost\|127.0.0.1" "$cc" && fail "restore left the Convergence keys"; fi
 
+  echo "==> config paseo: new providers in \$PASEO_HOME/config.json, 0600, restore"
+  local pc="$PASEO_HOME/config.json"
+  bin_has 'config opencode' config paseo || fail "config paseo did not warn about the missing OpenCode provider"
+  grep -q '"convergence-claude"' "$pc" || fail "paseo config lacks the convergence-claude provider"
+  grep -q '"convergence-opencode"' "$pc" || fail "paseo config lacks the convergence-opencode provider"
+  grep -q "\"ANTHROPIC_BASE_URL\": \"http://localhost:$GW\"" "$pc" || fail "paseo claude provider not pointed at the gateway root"
+  [ "$(stat -c %a "$pc" 2>/dev/null || stat -f %Lp "$pc")" = 600 ] || fail "paseo config.json is not 0600"
+  bin_has 'already up to date' config paseo || fail "config paseo not idempotent"
+  "$BIN" config list | grep -q 'paseo .*convergence=true' || fail "config list does not show paseo as configured"
+  "$BIN" config paseo restore >/dev/null
+  [ ! -e "$pc" ] || fail "config paseo restore left a file it created"
+
   echo "==> skills: scan needs the image, build it, scan upstream fixtures"
   local skills="$TEST_HOME/.claude/skills" scan_out
   mkdir -p "$skills"
@@ -293,10 +374,66 @@ print(out)')"
   wait_for "gateway after restart" 30 curl -sf "http://127.0.0.1:$GW/v1/models"
   wait_for "stand-in after restart" 30 curl -sf "http://127.0.0.1:$STANDIN/metrics"
 
+  echo "==> models.yaml pinball keywords and context scoring reach Pinball"
+  printf 'pinball:\n  heavy_keywords: [ursache]\n  light_keywords: []\n  scoring: {large_context_tokens: 60000}\n' \
+    >"$cfgdir/models.yaml"
+  "$BIN" restart
+  wait_for "pinball after models.yaml" 30 curl -sf "http://127.0.0.1:$PINBALL/metrics"
+  grep -q 'large_context_tokens: 60000' "$cfgdir/pinball.yaml" || fail "scoring.large_context_tokens not rendered"
+  pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"Was ist die Ursache? Please investigate"}]}')"
+  echo "$pr" | grep -q '"reason":"kw:ursache"' || fail "models.yaml heavy_keywords did not replace the defaults: $pr"
+  pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"Generate a title for this chat"}]}')"
+  echo "$pr" | grep -q 'light:' && fail "light_keywords: [] still scored a light keyword: $pr"
+  rm "$cfgdir/models.yaml"
+  "$BIN" restart
+  wait_for "pinball after models.yaml removed" 30 curl -sf "http://127.0.0.1:$PINBALL/metrics"
+  pr="$(curl -sf -X POST "http://127.0.0.1:$PINBALL/check" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"please investigate this"}]}')"
+  echo "$pr" | grep -q 'kw:investigate' || fail "default heavy_keywords not restored: $pr"
+
   echo "==> upgrade (re-render, pull pinned images, recreate)"
   "$BIN" upgrade
   wait_for "gateway after upgrade" 30 curl -sf "http://127.0.0.1:$GW/v1/models"
   "$BIN" status
+
+  echo "==> --discover-models: pinball builds its pool from the upstream's /v1/models"
+  local derr
+  derr="$("$BIN" init --yes --provider direct --anthropic-key sk-ant-e2e --discover-models 2>&1)" \
+    && fail "--discover-models accepted for provider direct"
+  echo "$derr" | grep -q 'discover-models needs provider copilot or ollama' || fail "unexpected direct error: $derr"
+  grep -q '^provider: ollama' "$cfgdir/config.yaml" || fail "rejected --discover-models changed config.yaml"
+  "$BIN" init --yes --provider ollama --ollama-url "http://host.docker.internal:$sport" --engine "$engine" --discover-models >/dev/null
+  if grep -q '^engine:' "$cfgdir/config.yaml"; then sed -i "s/^engine:.*/engine: $engine/" "$cfgdir/config.yaml"; fi
+  chmod 755 "$cfgdir"; chmod 644 "$cfgdir"/*.yaml
+  grep -q '^discover_models: true' "$cfgdir/config.yaml" || fail "discover_models not persisted"
+  grep -qF "PINBALL_DISCOVERY_URL: http://host.docker.internal:$sport/v1/models" "$cfgdir/docker-compose.yaml" \
+    || fail "PINBALL_DISCOVERY_URL not rendered"
+  "$engine" run --rm "${envf[@]}" -v "$cfgdir":/c:Z "$AGW_IMAGE" -f /c/agentgateway.yaml --validate-only
+  "$BIN" restart
+  wait_for "gateway after discovery restart" 30 curl -sf "http://127.0.0.1:$GW/v1/models"
+  wait_for "pinball discovery" 30 sh -c "\"$BIN\" logs pinball 2>&1 | grep -q 'discovered models=1 '"
+  # the stub lists one model, "stub": pinball must route auto to it (the static pool would send qwen2.5-coder:*)
+  curl -sf -m 30 "http://127.0.0.1:$GW/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"hello"}]}' >/dev/null || fail "auto request failed with discovery"
+  curl -sf "http://127.0.0.1:$sport/_received" | tail -n 1 | python3 -c 'import json,sys; m=json.loads(sys.stdin.read())["model"]; assert m=="stub", m' \
+    || fail "auto was not routed to the discovered model"
+  curl -sf -m 30 "http://127.0.0.1:$GW/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"some-new-model","messages":[{"role":"user","content":"hello"}]}' >/dev/null || fail "wildcard request failed"
+  curl -sf "http://127.0.0.1:$sport/_received" | tail -n 1 | python3 -c 'import json,sys; m=json.loads(sys.stdin.read())["model"]; assert m=="some-new-model", m' \
+    || fail "wildcard did not pass the model id through"
+  curl -sf "http://127.0.0.1:$GW/v1/models" | python3 -c '
+import json, sys
+ids = [m["id"] for m in json.load(sys.stdin)["data"]]
+assert len(ids) == len(set(ids)), "duplicate ids: %s" % ids
+assert "auto" in ids and not any(i.startswith("pinball-") for i in ids), ids' || fail "gateway /v1/models not deduplicated"
+  "$BIN" init --yes --provider ollama --ollama-url "http://host.docker.internal:$sport" --engine "$engine" --discover-models=false >/dev/null
+  if grep -q '^engine:' "$cfgdir/config.yaml"; then sed -i "s/^engine:.*/engine: $engine/" "$cfgdir/config.yaml"; fi
+  chmod 755 "$cfgdir"; chmod 644 "$cfgdir"/*.yaml
+  grep -q 'PINBALL_DISCOVERY_URL' "$cfgdir/docker-compose.yaml" && fail "--discover-models=false still renders discovery"
+  "$BIN" restart
+  wait_for "gateway after discovery off" 30 curl -sf "http://127.0.0.1:$GW/v1/models"
 
   echo "==> fail-closed default: requests are rejected while Stand-In is down"
   local standin_c

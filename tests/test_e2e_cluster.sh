@@ -125,12 +125,32 @@ EOF
     fi
   fi
 
+  echo "==> '--discover-models' with provider direct must fail before applying anything..."
+  trap - ERR
+  set +e
+  DM_ERR="$("$BIN" cluster install --namespace="${NAMESPACE}" --provider=direct --openai-key=mock-key --anthropic-key=mock-key \
+    --models-file="${MODELS_FILE}" --no-backup --discover-models 2>&1)"
+  DM_RC=$?
+  set -e
+  trap on_err ERR
+  if [ "$DM_RC" -eq 0 ] || ! echo "$DM_ERR" | grep -q "discover-models needs --provider copilot"; then
+    echo "ERROR: expected --discover-models to be refused for provider direct (rc=$DM_RC): $DM_ERR"
+    exit 1
+  fi
+  if kubectl -n "${NAMESPACE}" get deployment agentgateway >/dev/null 2>&1; then
+    echo "ERROR: --discover-models refusal still applied manifests"
+    exit 1
+  fi
+
   echo "==> Deploying Convergence via 'convergence cluster install' (with in-cluster request-log postgres)..."
   PG_PASS="testpgpass123"
+  PROMPT_FILE="$(mktemp)"
+  printf 'E2E-CLUSTER-PROMPT-LINE\n' >"${PROMPT_FILE}"
   "$BIN" cluster install --namespace="${NAMESPACE}" --provider=direct --openai-key=mock-key --anthropic-key=mock-key \
     --models-file="${MODELS_FILE}" \
     --openai-base-url="http://stub-upstream.${STUB_NS}.svc.cluster.local:8080/v1" \
-    --request-log-postgres --request-log-postgres-password="${PG_PASS}"
+    --request-log-postgres --request-log-postgres-password="${PG_PASS}" \
+    --system-prompt --system-prompt-file="${PROMPT_FILE}"
 
   echo "==> Waiting for Deployments and StatefulSets..."
   kubectl -n "${NAMESPACE}" rollout status "statefulset/request-log-postgres" --timeout=300s
@@ -179,7 +199,7 @@ EOF
   TOKEN="ghp_$(python3 -c 'import secrets,string;print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(36)))')"
   chat() {
     curl -s -D /tmp/chat.hdr -o /tmp/chat.out -w '%{http_code}' -X POST http://localhost:13000/v1/chat/completions \
-      -H 'Content-Type: application/json' \
+      -H 'Content-Type: application/json' -H 'x-agw-caller: e2e-cluster' \
       -d "{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"my token is ${TOKEN} please echo\"}]}" || true
   }
 
@@ -204,6 +224,22 @@ EOF
   if echo "$RECEIVED" | grep -qF "$TOKEN"; then echo "ERROR: raw token reached upstream" >&2; exit 1; fi
   echo "(b) response contains the original token"
   grep -qF "$TOKEN" /tmp/chat.out
+  echo "(c) --system-prompt: upstream request starts with one system message (defaults + file)"
+  echo "$RECEIVED" | python3 -c '
+import sys, json
+n = 0
+for l in sys.stdin:
+    l = l.strip()
+    if not l: continue
+    r = json.loads(l)
+    if "messages" not in r: continue
+    n += 1
+    m = r["messages"]
+    assert m[0]["role"] == "system" and "Trust only `git diff`" in m[0]["content"], m[0]
+    assert m[0]["content"].rstrip().endswith("E2E-CLUSTER-PROMPT-LINE"), m[0]
+    assert sum(1 for x in m if x["role"] == "system") == 1, m
+assert n >= 1, n
+'
 
   # Metrics are per replica: port-forward every pod of an app and sum the series.
   sum_metric() { # app port metric
@@ -253,6 +289,16 @@ EOF
   insights_json="$("$BIN" insights --db-dsn="${PG_DSN}" --since=1d --json)"
   echo "${insights_json}" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["total_requests"] > 0'
   echo "Insights query and JSON verification passed!"
+
+  echo "==> Request log records the x-agw-caller header as agentgateway_user..."
+  callers=""
+  for _ in $(seq 1 20); do
+    callers="$(kubectl -n "${NAMESPACE}" exec statefulset/request-log-postgres -- psql -U convergence -d agentgateway -At \
+      -c "select count(*) from request_logs where agentgateway_user = 'e2e-cluster'" 2>/dev/null || true)"
+    [ "${callers:-0}" -ge 1 ] 2>/dev/null && break
+    sleep 1
+  done
+  [ "${callers:-0}" -ge 1 ] || { echo "ERROR: no request_logs row with agentgateway_user=e2e-cluster (got '${callers}')" >&2; exit 1; }
 
   echo "==> Fail-closed: scale stand-in to 0; request must not reach upstream unscrubbed..."
   BEFORE="$(curl -sf http://localhost:${STUB_PORT}/_received | wc -l)"

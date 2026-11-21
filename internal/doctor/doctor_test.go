@@ -11,11 +11,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/jeefy/convergence/internal/config"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func newEnv(t *testing.T) *Env {
@@ -215,7 +218,7 @@ func TestCheckPortsWarnsOnNonLoopback(t *testing.T) {
 
 func TestCheckConfig(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	dir := filepath.Join(home, ".convergence")
 	if r, cfg := CheckConfig(dir); r.Status != Fail || cfg != nil {
 		t.Fatalf("missing: %+v", r)
@@ -235,7 +238,7 @@ func TestCheckConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("A=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := CheckConfig(dir); r.Status != Fail || !strings.Contains(r.Detail, "0644") {
+	if r, _ := CheckConfig(dir); runtime.GOOS != "windows" && (r.Status != Fail || !strings.Contains(r.Detail, "0644")) {
 		t.Fatalf("perm: %+v", r)
 	}
 	if err := os.Chmod(filepath.Join(dir, ".env"), 0o600); err != nil {

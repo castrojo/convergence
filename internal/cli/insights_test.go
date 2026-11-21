@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func TestParseSince(t *testing.T) {
@@ -27,7 +29,7 @@ func TestParseSince(t *testing.T) {
 }
 
 func TestInsightsCmdNoDB(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.New(t)
 	err := runCLI(t, "insights", "--since", "1d")
 	if err == nil {
 		t.Fatal("expected error when no DB is configured")

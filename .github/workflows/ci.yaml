@@ -51,6 +51,27 @@ jobs:
       - name: Validate rendered configs against the pinned agentgateway image
         run: tests/test_validate_configs.sh
 
+  windows-test:
+    name: Windows Unit Tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.24'
+          cache: true
+      - name: Build binary
+        run: go build -o convergence.exe ./cmd/convergence
+      - name: Smoke test
+        run: |
+          .\convergence.exe version
+          .\convergence.exe config list
+      - name: Test installer script
+        run: pwsh -NoProfile -File tests/test_install.ps1
+      - name: Unit tests (packages that run without a container engine)
+        run: go test -count=1 ./internal/clientconfig/... ./internal/config/... ./internal/models/... ./internal/prompts/... ./internal/doctor/... ./internal/templates/... ./internal/health/... ./internal/insights/... ./internal/skillscan/... ./internal/version/...
+
   vulncheck:
     name: Vulnerability Scan
     runs-on: ubuntu-latest

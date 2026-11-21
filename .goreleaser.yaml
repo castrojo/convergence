@@ -15,6 +15,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -24,11 +25,15 @@ builds:
 archives:
   - id: default
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE
       - install.sh
+      - install.ps1
 
 checksum:
   name_template: "checksums.txt"
@@ -38,6 +43,36 @@ checksum:
 # build locally with: goreleaser release --snapshot --clean --skip=publish,sbom
 sboms:
   - artifacts: archive
+
+# Winget manifest for microsoft/winget-pkgs. The PR is only opened when the
+# release workflow has WINGET_GITHUB_TOKEN (a PAT with write access to a fork
+# of winget-pkgs under jeefy); otherwise the manifest is written to dist/ only.
+winget:
+  - name: convergence
+    publisher: jeefy
+    package_identifier: jeefy.convergence
+    short_description: "Deploys and manages a local or Kubernetes AI gateway stack (agentgateway, Stand-In, Pinball) and points coding agents at it."
+    license: Apache-2.0
+    license_url: https://github.com/jeefy/convergence/blob/main/LICENSE
+    homepage: https://github.com/jeefy/convergence
+    publisher_url: https://github.com/jeefy
+    publisher_support_url: https://github.com/jeefy/convergence/issues
+    release_notes_url: https://github.com/jeefy/convergence/releases/tag/{{ .Tag }}
+    tags: [ai, gateway, cli, kubernetes]
+    skip_upload: '{{ if envOrDefault "WINGET_GITHUB_TOKEN" "" }}auto{{ else }}true{{ end }}'
+    repository:
+      owner: jeefy
+      name: winget-pkgs
+      branch: convergence-{{ .Version }}
+      # GoReleaser accepts only a bare {{ .Env.NAME }} here. It is read after the
+      # skip_upload check above, so an unset token never reaches it.
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
 
 release:
   github:

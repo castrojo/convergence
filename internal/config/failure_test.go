@@ -3,14 +3,17 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 func sandbox(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	return filepath.Join(home, ".convergence")
 }
 
@@ -133,8 +136,11 @@ func TestSaveConfig_modeAndRoundtrip(t *testing.T) {
 	}
 
 	st, err := os.Stat(filepath.Join(dir, "config.yaml"))
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v err %v", st.Mode().Perm(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", st.Mode().Perm())
 	}
 	out, err := LoadConfig()
 	if err != nil || *out != *in {
@@ -155,14 +161,14 @@ func TestSaveConfig_when_existingLooseMode_staysAsIs(t *testing.T) {
 	if err := SaveConfig(DefaultConfig()); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", st.Mode().Perm())
 	}
 }
 
 func TestSaveConfig_when_dirNotWritable(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	if err := os.Chmod(home, 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +205,7 @@ func TestSaveConfig_when_configPathIsDir(t *testing.T) {
 }
 
 func TestExists_when_homeUnset(t *testing.T) {
-	t.Setenv("HOME", "")
+	testhome.Set(t, "")
 	if _, err := GetConfigDir(); err == nil {
 		t.Skip("home resolvable on this platform")
 	}

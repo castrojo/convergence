@@ -17,6 +17,8 @@ import (
 
 	"github.com/jeefy/convergence/internal/config"
 	"github.com/jeefy/convergence/internal/models"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
 const metricsBody = "# TYPE agentgateway_requests_total counter\nagentgateway_requests_total{status=\"200\"} 7\n"
@@ -139,7 +141,7 @@ func TestCorruptConfig_surfacesErrorEverywhere(t *testing.T) {
 
 func TestNoHome_commandsFail(t *testing.T) {
 	newFakeEnv(t, "docker")
-	t.Setenv("HOME", "")
+	testhome.Set(t, "")
 	for _, args := range [][]string{{"models", "init"}, {"doctor"}, {"models"}} {
 		resetFlags(rootCmd)
 		if err := runCLI(t, args...); err == nil {

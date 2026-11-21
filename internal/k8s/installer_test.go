@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jeefy/convergence/internal/config"
+	"github.com/jeefy/convergence/internal/prompts"
 	"gopkg.in/yaml.v3"
 )
 
@@ -431,7 +432,7 @@ func TestOTelTracing(t *testing.T) {
 		t.Errorf("tracing must not render without otel endpoint")
 	}
 	c := cfgData(t, &ClusterOptions{Namespace: "x", Provider: "direct", OTel: config.OTel{Endpoint: "otel.mon.svc:4317"}})
-	for _, want := range []string{"frontendPolicies:", "host: otel.mon.svc:4317", "protocol: grpc", `service.name: '"convergence"'`} {
+	for _, want := range []string{"frontendPolicies:", "host: otel.mon.svc:4317", "protocol: grpc", `service.name: '"convergence"'`, `pinball.est_tokens: 'default(string(extauthz.est_tokens), "")'`} {
 		if !strings.Contains(c, want) {
 			t.Errorf("missing %q in:\n%s", want, c)
 		}
@@ -677,5 +678,162 @@ func TestCheckServiceMonitorCRDMissing(t *testing.T) {
 	err := CheckServiceMonitorCRD()
 	if err == nil || !strings.Contains(err.Error(), "kube-prometheus-stack") {
 		t.Fatalf("want CRD-missing error with hint, got %v", err)
+	}
+}
+
+func TestSystemPromptTransformation(t *testing.T) {
+	if strings.Contains(cfgData(t, &ClusterOptions{Namespace: "x", Provider: "direct"}), "transformation:") {
+		t.Errorf("prompt transformation must not render by default")
+	}
+	sp := prompts.Settings{Enabled: true, Extra: "key: looks like yaml"}
+	mf := filepath.Join(t.TempDir(), "m.yaml")
+	if err := os.WriteFile(mf, []byte("passthrough:\n  gpt: {provider: openai, model: gpt-5}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := cfgData(t, &ClusterOptions{Namespace: "x", Provider: "direct", OpenAIKey: "k", ModelsFile: mf, SystemPrompt: sp, OptimizerDSN: "postgres://db/x"})
+	var parsed struct {
+		LLM struct {
+			Models []struct {
+				Name           string
+				Transformation map[string]string
+			}
+		} `yaml:"llm"`
+	}
+	if err := yaml.Unmarshal([]byte(c), &parsed); err != nil {
+		t.Fatalf("agentgateway config is not YAML: %v\n%s", err, c)
+	}
+	if len(parsed.LLM.Models) == 0 {
+		t.Fatalf("no models in:\n%s", c)
+	}
+	optTwins, passthrough := 0, false
+	for _, m := range parsed.LLM.Models {
+		passthrough = passthrough || m.Name == "gpt"
+		// optimizer replays come from the request log, which already holds the prompt
+		if strings.HasPrefix(m.Name, "opt-") {
+			optTwins++
+			if len(m.Transformation) != 0 {
+				t.Errorf("model %s: opt- twins must not prepend the prompt again", m.Name)
+			}
+			continue
+		}
+		for _, k := range []string{"messages", "system", "instructions"} {
+			if !strings.Contains(m.Transformation[k], sp.CELString()) {
+				t.Errorf("model %s: transformation %s missing prompt literal: %q", m.Name, k, m.Transformation[k])
+			}
+		}
+	}
+	if optTwins == 0 || !passthrough {
+		t.Errorf("expected opt- twin and passthrough models to be rendered (twins=%d passthrough=%v)", optTwins, passthrough)
+	}
+	if _, err := RenderManifests(&ClusterOptions{Namespace: "x", Provider: "direct", SystemPrompt: prompts.Settings{Enabled: true, Extra: "$X"}}); err == nil {
+		t.Errorf("'$' in system prompt must fail")
+	}
+}
+
+// Models served by Copilot normalise system text to plain-text system messages; others do not.
+func TestCopilotSystemTextNormalised(t *testing.T) {
+	c := cfgData(t, &ClusterOptions{Namespace: "x", Provider: "copilot", CopilotToken: "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+	var parsed struct {
+		LLM struct {
+			Models []struct {
+				Name                string
+				FinalTransformation map[string]string `yaml:"finalTransformation"`
+			}
+		} `yaml:"llm"`
+	}
+	if err := yaml.Unmarshal([]byte(c), &parsed); err != nil {
+		t.Fatalf("agentgateway config is not YAML: %v\n%s", err, c)
+	}
+	if len(parsed.LLM.Models) == 0 {
+		t.Fatalf("no models in:\n%s", c)
+	}
+	for _, m := range parsed.LLM.Models {
+		expr := m.FinalTransformation["messages"]
+		if !strings.Contains(expr, `m.role in ["system", "developer"]`) || !strings.Contains(expr, `.join("\n\n")`) {
+			t.Errorf("model %s: missing system text normalisation: %q", m.Name, expr)
+		}
+	}
+	if strings.Contains(cfgData(t, &ClusterOptions{Namespace: "x", Provider: "direct", OpenAIKey: "k"}), "finalTransformation:") {
+		t.Errorf("non-Copilot models must not be rewritten")
+	}
+}
+
+// With the request log on, the x-agw-caller header is stored as request_logs.agentgateway_user.
+func TestRequestLogRecordsCaller(t *testing.T) {
+	var parsed struct {
+		Config struct {
+			StandardAttributes struct{ User string } `yaml:"standardAttributes"`
+		}
+	}
+	c := cfgData(t, &ClusterOptions{Namespace: "x", Provider: "direct", OpenAIKey: "k", RequestLogDB: "postgres://db/x"})
+	if err := yaml.Unmarshal([]byte(c), &parsed); err != nil {
+		t.Fatalf("agentgateway config is not YAML: %v", err)
+	}
+	if want := `default(request.headers["x-agw-caller"], null)`; parsed.Config.StandardAttributes.User != want {
+		t.Errorf("standardAttributes.user = %q, want %q", parsed.Config.StandardAttributes.User, want)
+	}
+	if strings.Contains(cfgData(t, &ClusterOptions{Namespace: "x", Provider: "direct", OpenAIKey: "k"}), "standardAttributes:") {
+		t.Errorf("standardAttributes must only render with the request log")
+	}
+}
+
+func TestPinballConfigHasKeywords(t *testing.T) {
+	out, err := RenderManifests(&ClusterOptions{Namespace: "x", Provider: "copilot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"    heavy_keywords:", `      - "architecture"`, "    light_keywords:", `      - "tl;dr"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pinball-config missing %q", want)
+		}
+	}
+}
+
+func TestDiscoverModels(t *testing.T) {
+	off, err := RenderManifests(&ClusterOptions{Namespace: "x", Provider: "copilot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"PINBALL_DISCOVERY", "pinball-live", "discovery-cache"} {
+		if strings.Contains(off, s) {
+			t.Errorf("renders %q without --discover-models", s)
+		}
+	}
+	const dsn = "postgres://u:pw@db:5432/ag" //nolint:gosec // fake DSN fixture
+	on, err := RenderManifests(&ClusterOptions{Namespace: "x", Provider: "copilot", DiscoverModels: true, RequestLogDB: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"http://copilot-api.x.svc.cluster.local:4141/v1/models",
+		"/var/cache/pinball/discovery.json",
+		"name: discovery-cache",
+		"model: pinball-live",
+		`- name: "opt-*"`,
+		`- name: "*"`,
+	} {
+		if !strings.Contains(on, want) {
+			t.Errorf("manifests missing %q", want)
+		}
+	}
+	if strings.Contains(on, "- name: opt-claude") {
+		t.Error("copilot opt- twins duplicate the opt-* route")
+	}
+	if _, err := RenderManifests(&ClusterOptions{Namespace: "x", Provider: "direct", DiscoverModels: true}); err == nil ||
+		!strings.Contains(err.Error(), "discover-models needs --provider copilot") {
+		t.Errorf("direct + --discover-models: err = %v", err)
+	}
+}
+
+func TestPinballKeywordsRenderedFromModelsFile(t *testing.T) {
+	f := modelsFile(t, "pinball:\n  heavy_keywords: [refactor]\n  light_keywords: []\n  scoring: {large_context_tokens: 60000}\n")
+	out, err := RenderManifests(&ClusterOptions{Namespace: "x", Provider: "copilot", CopilotToken: "t", ModelsFile: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"heavy_keywords:\n      - \"refactor\"\n    light_keywords: []\n", "large_context_tokens: 60000"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
 	}
 }

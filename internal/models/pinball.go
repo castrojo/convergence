@@ -3,13 +3,14 @@ package models
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Pinball is the optional `pinball:` block of models.yaml: overrides for
-// pinball's thresholds and scoring (pinball 0.7.6 schema). Unset keys keep
+// pinball's thresholds and scoring (pinball 0.8.0 schema). Unset keys keep
 // pinball's own defaults.
 type Pinball struct {
 	Thresholds struct {
@@ -17,6 +18,9 @@ type Pinball struct {
 		Heavy    *int `yaml:"heavy"`
 	} `yaml:"thresholds"`
 	Scoring map[string]int `yaml:"scoring"`
+	// Keyword lists replace pinball's defaults when set; `[]` turns that signal off.
+	HeavyKeywords *[]string `yaml:"heavy_keywords"`
+	LightKeywords *[]string `yaml:"light_keywords"`
 }
 
 // scoringDefaults are pinball's defaults; only used to validate cutoff order.
@@ -25,6 +29,8 @@ var scoringDefaults = map[string]int{
 	"long_chars": 4000, "long": 1, "very_long_chars": 12000, "very_long": 2,
 	"short_chars": 160, "short": -1, "tools": 1, "effort_high": 2, "effort_low": -1,
 	"small_output_tokens": 512, "small_output": -1, "structured": -1,
+	// Context-size signal (pinball 0.7.5+): the *_tokens cutoffs are unset (signal off) by default.
+	"large_context_tokens": 0, "large_context": 1, "very_large_context_tokens": 0, "very_large_context": 2,
 }
 
 // ParsePinball extracts the `pinball:` block from models.yaml content.
@@ -87,12 +93,22 @@ func (r *Resolved) ApplyPinball(p *Pinball) error {
 	if eff("very_long_chars") <= eff("long_chars") {
 		return fmt.Errorf("models.yaml: pinball.scoring.very_long_chars must be greater than long_chars")
 	}
+	for _, k := range []string{"large_context_tokens", "very_large_context_tokens"} {
+		if v, ok := p.Scoring[k]; ok && v <= 0 {
+			return fmt.Errorf("models.yaml: pinball.scoring.%s must be greater than 0 (leave it out to turn the signal off)", k)
+		}
+	}
+	small, hasSmall := p.Scoring["large_context_tokens"]
+	if big, ok := p.Scoring["very_large_context_tokens"]; ok && (!hasSmall || big <= small) {
+		return fmt.Errorf("models.yaml: pinball.scoring.very_large_context_tokens needs a smaller large_context_tokens")
+	}
 	for _, k := range []string{"max_heavy_keywords", "short_chars", "small_output_tokens"} {
 		if eff(k) < 0 {
 			return fmt.Errorf("models.yaml: pinball.scoring.%s must not be negative", k)
 		}
 	}
 	r.Scoring = p.Scoring
+	r.HeavyKeywords, r.LightKeywords = p.HeavyKeywords, p.LightKeywords
 	return nil
 }
 
@@ -107,6 +123,44 @@ func (r *Resolved) ScoringLines() []string {
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, fmt.Sprintf("%s: %d", k, r.Scoring[k]))
+	}
+	return out
+}
+
+// Keyword lists from pinball 0.8.0's packaged pinball.yaml. A mounted config
+// replaces the packaged one whole, so they are rendered to keep keyword scoring.
+var (
+	heavyKeywords = []string{
+		"architecture", "architect", "refactor", "debug", "root cause", "race condition",
+		"deadlock", "concurrency", "prove", "proof", "security", "vulnerability", "migrate",
+		"migration", "optimize", "performance", "algorithm", "trade-off", "tradeoff",
+		"distributed", "invariant", "investigate",
+	}
+	lightKeywords = []string{
+		"title", "summarize", "summary", "translate", "classify", "extract", "rephrase",
+		"one word", "yes or no", "tl;dr",
+	}
+)
+
+// HeavyKeywordLines renders pinball's heavy_keywords as quoted YAML list items for
+// the templates to indent: the models.yaml list when set, else pinball's defaults.
+func (r *Resolved) HeavyKeywordLines() []string {
+	return keywordLines(r.HeavyKeywords, heavyKeywords)
+}
+
+// LightKeywordLines is HeavyKeywordLines for light_keywords.
+func (r *Resolved) LightKeywordLines() []string {
+	return keywordLines(r.LightKeywords, lightKeywords)
+}
+
+func keywordLines(set *[]string, defaults []string) []string {
+	words := defaults
+	if set != nil {
+		words = *set
+	}
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		out = append(out, "- "+strconv.Quote(w))
 	}
 	return out
 }
