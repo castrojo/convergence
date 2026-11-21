@@ -3,13 +3,16 @@ package clientconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+
+	"github.com/jeefy/convergence/internal/testhome"
 )
 
+// ompTestHome is a scratch home with omp's default layout (no directory overrides).
 func ompTestHome(t *testing.T) string {
 	t.Helper()
-	h := t.TempDir()
-	t.Setenv("HOME", h)
+	h := testhome.New(t)
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("PI_CONFIG_DIR", "")
 	return h
@@ -72,8 +75,11 @@ func TestOMPConfigurePreservesProvidersAndRestores(t *testing.T) {
 		t.Fatal("omp's model roles changed")
 	}
 	st, err := os.Stat(p)
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("existing permissions changed: %v %v", st, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+		t.Fatalf("existing permissions changed: %v", st.Mode().Perm())
 	}
 	res, err := Configure("omp", Options{GatewayURL: "http://gateway:3210/v1/"})
 	if err != nil || res.Changed || read(t, p) != configured {

@@ -395,7 +395,7 @@ var clients = []client{
 			_, ok := lookup(d, "providers", Key)
 			return ok
 		},
-		note: "Models: convergence/auto, convergence/pinball, convergence/light, convergence/standard, convergence/heavy. Use `--model convergence/auto` or select in `/models`.",
+		note: "Models: convergence/auto, convergence/pinball, convergence/light, convergence/standard, convergence/heavy. Use `--model convergence/auto` or pick one with `/model`.",
 	},
 }
 
